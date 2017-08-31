@@ -1,12 +1,8 @@
-import de.heikoseeberger.sbtheader.license._
-
 name := "pool"
 
 organization := "io.github.davidgregory084"
 
 version := "0.1.0-SNAPSHOT"
-
-scalaVersion := "2.12.3"
 
 releaseCrossBuild := true
 
@@ -21,7 +17,10 @@ libraryDependencies ++= Seq(
 
 licenses += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0.html"))
 
-headers := Map("scala" -> Apache2_0("2017", "David Gregory"))
+headers := {
+  import de.heikoseeberger.sbtheader.license._
+  Map("scala" -> Apache2_0("2017", "David Gregory"))
+}
 
 createHeaders.in(Compile) := {
   createHeaders.in(Compile).triggeredBy(compile.in(Compile)).value
