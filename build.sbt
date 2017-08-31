@@ -13,7 +13,8 @@ libraryDependencies ++= Seq(
   "io.monix" %% "monix" % "2.3.0",
   "io.monix" %% "monix-cats" % "2.3.0",
   "com.typesafe.scala-logging" %% "scala-logging" % "3.7.2",
-  "ch.qos.logback" % "logback-classic" % "1.2.3"
+  "org.scalatest" %% "scalatest" % "3.0.3" % Test,
+  "ch.qos.logback" % "logback-classic" % "1.2.3" % Test
 )
 
 licenses += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0.html"))

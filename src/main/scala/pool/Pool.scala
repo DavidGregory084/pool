@@ -50,7 +50,7 @@ final case class Pool[A](
     entries.take.flatMap {
       case e :: es =>
         // If there is a free resource take it
-        Task.eval(logger.info(s"$name: Using resource ${e.entry}")).followedBy {
+        Task.eval(logger.trace(s"$name: Using resource ${e.entry}")).followedBy {
           entries.put(es).followedBy { Task.now(e.entry) }
         }
       case Nil =>
@@ -63,15 +63,17 @@ final case class Pool[A](
           } else {
             // If we haven't, create a new resource and return it
             inUse.put(u + 1).followedBy {
-              Task.eval(logger.info(s"$name: Creating a new resource")).followedBy {
+              Task.eval(logger.debug(s"$name: Creating a new resource")).followedBy {
                 create.materialize.flatMap {
                   case Success(a) =>
                     entries.put(Nil).followedBy(Task.now(a))
-                  case Failure(e) =>
+                  case Failure(NonFatal(e)) =>
                     // We failed to create the resource, so decrement the counter again
                     inUse.take.flatMap(u => inUse.put(u - 1)).followedBy {
                       entries.put(Nil).followedBy(Task.raiseError(e))
                     }
+                  case Failure(e) =>
+                    Task.raiseError(e)
                 }
               }
             }
@@ -84,7 +86,7 @@ final case class Pool[A](
     entries.take.flatMap {
       case e :: es =>
         // If there is a free resource take it
-        Task.eval(logger.info(s"$name: Using resource ${e.entry}")).followedBy {
+        Task.eval(logger.trace(s"$name: Using resource ${e.entry}")).followedBy {
           entries.put(es).followedBy { Task.now(Some(e.entry)) }
         }
       case Nil =>
@@ -97,15 +99,17 @@ final case class Pool[A](
           } else {
             // If we haven't, create a new resource and return it
             inUse.put(u + 1).followedBy {
-              Task.eval(logger.info(s"$name: Creating a new resource")).followedBy {
+              Task.eval(logger.debug(s"$name: Creating a new resource")).followedBy {
                 create.materialize.flatMap {
                   case Success(a) =>
                     entries.put(Nil).followedBy(Task.now(Some(a)))
-                  case Failure(e) =>
+                  case Failure(NonFatal(e)) =>
                     // We failed to create the resource, so decrement the counter again
                     inUse.take.flatMap(u => inUse.put(u - 1)).followedBy {
                       entries.put(Nil).followedBy(Task.raiseError(e))
                     }
+                  case Failure(e) =>
+                    Task.raiseError(e)
                 }
               }
             }
@@ -116,7 +120,7 @@ final case class Pool[A](
   }
 
   private def putResource(a: A): Task[Unit] = {
-    Task.eval(logger.info(s"$name: Returning $a to pool")).followedBy {
+    Task.eval(logger.trace(s"$name: Returning $a to pool")).followedBy {
       entries.take.flatMap { es =>
         entries.put(Entry(a, System.nanoTime) :: es)
       }
@@ -285,7 +289,7 @@ object Pool extends LazyLogging {
     minIdle: Int,
     maxEntries: Int
   ): Task[Pool[A]] =
-    Task.eval(logger.info(s"Creating pool $name with idleTimeout=$idleTimeout, minIdle=$minIdle, maxEntries=$maxEntries")).followedBy {
+    Task.eval(logger.info(s"Creating pool $name - idleTimeout=$idleTimeout, minIdle=$minIdle, maxEntries=$maxEntries")).followedBy {
       Task.create { (scheduler, callback) =>
         val inUse = MVar(0)
         val entries = MVar(List.empty[Entry[A]])
@@ -357,53 +361,4 @@ object Pool extends LazyLogging {
           Task.raiseError(e)
       }
     }
-
-  def main(args: Array[String]): Unit = {
-    implicit val scheduler = Scheduler.io(
-      name = "pool-test",
-      reporter = UncaughtExceptionReporter(
-        logger.error(s"pool-test: Uncaught exception in IO scheduler", _)))
-
-    val createPool = Pool.withPool[Unit, Unit](
-      name = "test",
-      create = Task.eval(logger.info("Creating entry")),
-      destroy = a => Task.eval(logger.info(s"Destroying entry $a")),
-      minIdle = 5,
-      creatorDelay = 1.second,
-      creatorInterval = 1.second,
-      idleTimeout = 60.seconds,
-      reaperDelay = 1.second,
-      reaperInterval = 1.second,
-      maxEntries = 10
-    ) { pool =>
-        for {
-          _ <- {
-            pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-          }
-          _ <- {
-            pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-          }
-          _ <- {
-            pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-          }
-          _ <- {
-            pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-              .zip(pool.withResource(a => Task.fork(Task.eval(Thread.sleep(20000)))))
-          }
-        } yield ()
-      }
-
-    Await.result(createPool.runAsync, Duration.Inf)
-  }
 }
