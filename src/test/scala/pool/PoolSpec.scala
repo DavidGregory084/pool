@@ -13,9 +13,11 @@ class PoolSpec extends AsyncFlatSpec with Matchers with LazyLogging {
   implicit val scheduler = Scheduler.io(
     name = "pool-test",
     reporter = UncaughtExceptionReporter(
-      logger.error(s"pool-test: Uncaught exception in IO scheduler", _)))
+      logger.error(s"pool-test: Uncaught exception in IO scheduler", _)
+    )
+  )
 
-  def createPool[A](create: Task[A], destroy: A => Task[Unit]): (Pool[A]=> Task[Assertion]) => Task[Assertion] =
+  def createPool[A](create: Task[A], destroy: A => Task[Unit]): (Pool[A] => Task[Assertion]) => Task[Assertion] =
     Pool.withPool[A, Assertion](
       name = "test",
       create = Task.eval(logger.debug("Creating entry")).followedBy(create),

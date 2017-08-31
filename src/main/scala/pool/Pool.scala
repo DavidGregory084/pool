@@ -303,7 +303,8 @@ object Pool extends LazyLogging {
             creatorTask.runAsync(Scheduler.singleThread(
               name = s"$name-creator",
               reporter = UncaughtExceptionReporter(
-                logger.error(s"$name: Uncaught exception in creator thread", _))
+                logger.error(s"$name: Uncaught exception in creator thread", _)
+              )
             ))
           }
 
@@ -316,7 +317,8 @@ object Pool extends LazyLogging {
             reaperTask.runAsync(Scheduler.singleThread(
               name = s"$name-reaper",
               reporter = UncaughtExceptionReporter(
-                logger.error(s"$name: Uncaught exception in reaper thread", _))
+                logger.error(s"$name: Uncaught exception in reaper thread", _)
+              )
             ))
           }
 
