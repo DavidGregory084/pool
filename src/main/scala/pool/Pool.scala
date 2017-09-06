@@ -114,7 +114,6 @@ final case class Pool[A](
               }
             }
           }
-
         }
     }
   }
@@ -131,7 +130,7 @@ final case class Pool[A](
     for {
       _ <- Task.eval(s"$name: Destroying resource $a")
       // Ignore non-fatal errors in resource destruction
-      _ <- destroy(a).recoverWith { case NonFatal(_) => Task.unit }
+      _ <- destroy(a).recover { case NonFatal(_) => }
       u <- inUse.take
       _ <- inUse.put(u - 1)
     } yield ()
@@ -174,11 +173,29 @@ final case class Pool[A](
     _ <- inUse.put(0)
     _ <- entries.put(Nil)
     // Destroy every pool entry
-    _ <- es.traverse(e => destroy(e.entry))
+    _ <- es.traverse { e =>
+      destroy(e.entry)
+        .recover { case NonFatal(_) => }
+    }
   } yield ()
 }
 
 object Pool extends LazyLogging {
+  private val random = new scala.util.Random
+
+  def getRetryDelay(consecutiveFailed: Int): FiniteDuration = {
+    // TODO: Add retry delay cap to config
+    // Cap delay at 60 seconds between attempts
+    val cap = 60.seconds.toMillis.toInt
+    val exp = math.pow(2, consecutiveFailed.toDouble)
+    // Choose the min of the cap and the calculated delay
+    val max = math.min(cap, 250 * 2 * exp.toInt)
+    // The next delay is a random number of milliseconds
+    // between 0 and the calculated max delay
+    val nextDelay = Pool.random.nextInt(max + 1)
+    nextDelay.milliseconds
+  }
+
   private def creator[A](
     poolName: String,
     create: Task[A],
@@ -191,34 +208,60 @@ object Pool extends LazyLogging {
     Task.fork {
       Task.async { (scheduler, _) =>
         val runnable: Runnable = { () =>
-          val addEntries = for {
-            // Take the MVars describing the pool status
-            es <- entries.take
-            u <- inUse.take
 
-            esString = es.mkString("[", ",", "]")
+          def addEntries(delay: Option[FiniteDuration], consecutiveFailed: Int = 0): Task[Unit] =
+            for {
+              // Sleep for the specified delay before attempting to create a resource
+              _ <- delay.map { d =>
+                Task.eval(Thread.sleep(d.toMillis))
+              }.getOrElse(Task.unit)
 
-            _ <- Task.eval(logger.trace(s"$poolName: Adding idle entries, entries: $esString, inUse: $u"))
+              // Take the MVars describing the pool status
+              es <- entries.take
+              u <- inUse.take
 
-            _ <- if (u < minIdle) {
-              // If there are fewer than the specified number of idle resources, add some more
-              val newResources = (0 until (minIdle - u)).toList.traverse(_ => create)
-              newResources.materialize.flatMap {
-                case Success(newAs) =>
-                  val newEs = newAs.map(Entry(_, System.nanoTime))
-                  inUse.put(u + newEs.length).followedBy(entries.put(es ++ newEs))
-                case Failure(NonFatal(_)) =>
-                  inUse.put(u).followedBy(entries.put(es))
-                case Failure(e) =>
-                  Task.raiseError(e)
+              esString = es.mkString("[", ",", "]")
+
+              _ <- Task.eval(logger.trace(s"$poolName: Adding idle entries, entries: $esString, inUse: $u"))
+
+              // If there are fewer than the specified number of idle resources, add another
+              _ <- if (u < minIdle) {
+                // Increment the number of used resources
+                inUse.put(u + 1).followedBy {
+                  create.materialize.flatMap {
+                    // We successfully created a new entry;
+                    // Update the entries MVar and do a recursive
+                    // call to see whether we need to create another
+                    case Success(a) =>
+                      val entry = Entry(a, System.nanoTime)
+                      entries.put(entry :: es)
+                        .followedBy(addEntries(delay = None, consecutiveFailed = 0))
+
+                    // We failed to create a new entry;
+                    // Retry using a capped exponential backoff strategy with jitter
+                    case Failure(NonFatal(e)) =>
+                      val nextFailed = consecutiveFailed + 1
+                      val nextDelay = getRetryDelay(nextFailed)
+                      // We failed to create the resource, so decrement the counter again
+                      Task.eval(logger.error(s"Failed to create resource - retrying after $nextDelay", e)).followedBy {
+                        inUse.take.flatMap(uu => inUse.put(uu - 1))
+                          .followedBy(entries.put(es))
+                          .followedBy(addEntries(delay = Some(nextDelay), consecutiveFailed = nextFailed))
+                      }
+
+                    // Virtual machine error - don't even try to handle that
+                    case Failure(e) =>
+                      Task.raiseError(e)
+
+                  }.recover { case NonFatal(_) => }
+                }
+              } else {
+                // Otherwise just put back the values we took
+                inUse.put(u).followedBy(entries.put(es))
               }
-            } else {
-              // Otherwise just put back the values we took
-              inUse.put(u).followedBy(entries.put(es))
-            }
-          } yield ()
+            } yield ()
 
-          Await.result(addEntries.runAsync(scheduler), Duration.Inf)
+          Await.result(addEntries(delay = None).runAsync(scheduler), Duration.Inf)
         }
 
         scheduler.scheduleWithFixedDelay(awakeDelay.toMillis, awakeInterval.toMillis, TimeUnit.MILLISECONDS, runnable)
@@ -266,7 +309,10 @@ object Pool extends LazyLogging {
             }
 
             // Run the cleanup action for each stale entry
-            _ <- stale.traverse(e => destroy(e.entry))
+            _ <- stale.traverse { e =>
+              destroy(e.entry)
+                .recover { case NonFatal(_) => }
+            }
 
           } yield ()
 
